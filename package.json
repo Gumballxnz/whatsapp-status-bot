@@ -4,10 +4,13 @@
   "description": "Bot de status do WhatsApp usando Baileys",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "connect": "node qr_connect.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "6.7.16",
+    "dotenv": "^18.0.9",
+    "googleapis": "^188.0.0",
     "moment-timezone": "^0.5.46",
     "node-cron": "^3.0.3",
     "pino": "^9.0.0",

@@ -11,7 +11,7 @@
  * Uso: node qr_connect.js
  */
 
-const { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = require('@whiskeysockets/baileys');
 const QRCode = require('qrcode');
 const pino = require('pino');
 const fs = require('fs');
@@ -20,6 +20,7 @@ const { exec } = require('child_process');
 
 const SESSION_PATH = path.join(__dirname, 'session');
 const CONTACTS_FILE = path.join(__dirname, 'contacts_cache.json');
+const QR_PATH = path.join(__dirname, 'qrcode.png');
 
 async function start() {
     console.log('=============================================');
@@ -35,7 +36,7 @@ async function start() {
         version,
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: false,
+        printQRInTerminal: true,
         syncFullHistory: true, // Ativado aqui para capturar todos os contactos
     });
 
@@ -46,7 +47,7 @@ async function start() {
     // Carrega cache existente se houver
     try {
         if (fs.existsSync(CONTACTS_FILE)) {
-            contactsArray = JSON.parse(fs.readFileSync(CONTACTS_FILE));
+            contactsArray = JSON.parse(fs.readFileSync(CONTACTS_FILE, 'utf-8'));
             console.log(`[CONTACTOS] Cache existente carregado: ${contactsArray.length} contactos.`);
         }
     } catch (e) {
@@ -59,7 +60,7 @@ async function start() {
 
         if (newContacts.length > 0) {
             contactsArray.push(...newContacts);
-            fs.writeFileSync(CONTACTS_FILE, JSON.stringify(contactsArray));
+            fs.writeFileSync(CONTACTS_FILE, JSON.stringify(contactsArray, null, 2));
             console.log(`[CONTACTOS] Sincronizados: ${contactsArray.length} total (+${newContacts.length} novos)`);
         }
     });
@@ -69,39 +70,44 @@ async function start() {
 
         if (qr) {
             console.log('\n📱 Gerando QR Code... Aguarde!');
-            const qrPath = path.join(__dirname, 'qr_code.png');
-            QRCode.toFile(qrPath, qr, { width: 400 }, (err) => {
+            QRCode.toFile(QR_PATH, qr, { width: 400 }, (err) => {
                 if (err) {
                     console.error('Erro ao gerar QR Code:', err);
                 } else {
-                    console.log(`✅ QR Code salvo em: ${qrPath}`);
+                    console.log(`✅ QR Code salvo em: ${QR_PATH}`);
                     // Abre automaticamente no Windows
                     if (process.platform === 'win32') {
-                        exec(`start "" "${qrPath}"`);
+                        exec(`start "" "${QR_PATH}"`);
                     } else {
-                        console.log('👉 Abra o arquivo qr_code.png e escaneie com o WhatsApp.');
+                        console.log('👉 Abra o arquivo qrcode.png e escaneie com o WhatsApp.');
                     }
                 }
             });
         }
 
         if (connection === 'close') {
-            const reason = lastDisconnect?.error?.output?.statusCode;
-            console.log(`\n⚠️ Conexão encerrada. Código: ${reason}`);
-
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            console.log(`\n⚠️ Conexão encerrada. Código: ${statusCode}`);
+            if (statusCode === DisconnectReason.loggedOut) {
+                console.log('❌ Sessão expirada/desconectada no dispositivo. Limpando credenciais...');
+                if (fs.existsSync(SESSION_PATH)) {
+                    fs.rmSync(SESSION_PATH, { recursive: true, force: true });
+                }
+                console.log('🔄 Reinicie o script para ler um novo QR Code.');
+                process.exit(0);
+            }
         } else if (connection === 'open') {
             console.log('\n✅✅✅ WHATSAPP CONECTADO COM SUCESSO! ✅✅✅');
             console.log(`   JID: ${sock.user?.id}`);
             console.log('\n⏳ ATENÇÃO: NÃO feche este terminal ainda!');
             console.log('   O WhatsApp está sincronizando seus contactos...');
             console.log('   Aguarde o número de contactos PARAR DE CRESCER,');
-            console.log('   depois pode fechar e iniciar o bot principal.\n');
+            console.log('   depois pode fechar e iniciar o bot principal (npm start).\n');
 
             // Limpa o QR code após conectar
-            const qrPath = path.join(__dirname, 'qr_code.png');
-            if (fs.existsSync(qrPath)) {
-                fs.unlinkSync(qrPath);
-                console.log('[LIMPEZA] qr_code.png removido.');
+            if (fs.existsSync(QR_PATH)) {
+                fs.unlinkSync(QR_PATH);
+                console.log('[LIMPEZA] qrcode.png removido.');
             }
         }
     });

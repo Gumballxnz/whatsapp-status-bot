@@ -1,0 +1,12 @@
+node_modules/
+session/
+auth_session/
+*.pem
+*.tar.gz
+*.zip
+qrcode.png
+qr_code.png
+contacts_cache.json
+test_*.js
+.env
+.DS_Store
