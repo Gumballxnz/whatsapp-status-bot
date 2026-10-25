@@ -1,11 +1,11 @@
+const baileys = require('baileys');
+const makeWASocket = baileys.default || baileys.makeWASocket || baileys;
 const {
-    makeWASocket,
-    useMultiFileAuthState,
-    fetchLatestBaileysVersion,
-    makeCacheableSignalKeyStore,
     Browsers,
-    DisconnectReason
-} = require('@whiskeysockets/baileys');
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    useMultiFileAuthState
+} = baileys;
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
@@ -28,85 +28,55 @@ if (!targetNumber) {
     process.exit(1);
 }
 
-function cleanSession() {
+function hasValidSession() {
     try {
-        if (fs.existsSync(SESSION_PATH)) {
-            const files = fs.readdirSync(SESSION_PATH);
-            for (const file of files) {
-                fs.unlinkSync(path.join(SESSION_PATH, file));
-            }
-        } else {
-            fs.mkdirSync(SESSION_PATH, { recursive: true });
-        }
-    } catch (e) {
-        // Ignora erros de limpeza inicial
+        const credsPath = path.join(SESSION_PATH, 'creds.json');
+        if (!fs.existsSync(credsPath)) return false;
+        const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+        return !!(creds.me && creds.me.id);
+    } catch {
+        return false;
     }
 }
 
-cleanSession();
-
 let isConnected = false;
-let isPairingCompleted = false;
+let pairingRequested = false;
 
-async function startPairingLoop() {
+async function startPairing() {
     if (isConnected) return;
 
+    if (!fs.existsSync(SESSION_PATH)) {
+        fs.mkdirSync(SESSION_PATH, { recursive: true });
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
-    const { version } = await fetchLatestBaileysVersion();
+
+    let version;
+    try {
+        const fetched = await fetchLatestBaileysVersion();
+        version = fetched.version;
+    } catch (e) {
+        version = [2, 3000, 1044006379];
+    }
 
     const sock = makeWASocket({
-        logger: pino({ level: 'silent' }),
         version,
-        browser: Browsers.ubuntu('Chrome'),
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }))
-        },
-        markOnlineOnConnect: true,
-        generateHighQualityLinkPreview: false,
+        auth: state,
+        logger: pino({ level: 'silent' }),
         syncFullHistory: false,
-        defaultQueryTimeoutMs: 120000,
-        connectTimeoutMs: 60000
+        markOnlineOnConnect: true,
+        browser: Browsers.ubuntu('Chrome')
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
 
-        if (connection === 'close') {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            if (!isConnected) {
-                if (statusCode === 515 || statusCode === DisconnectReason.restartRequired) {
-                    isPairingCompleted = true;
-                    console.log('\n🔄 WhatsApp confirmou o pareamento! Finalizando chaves...');
-                    setTimeout(startPairingLoop, 1500);
-                } else {
-                    console.log(`\n⏳ Conexão reiniciada (${statusCode || 'timeout'})...`);
-                    if (!isPairingCompleted) cleanSession();
-                    setTimeout(startPairingLoop, 2000);
-                }
-            }
-        }
+        if (qr) {
+            if (hasValidSession()) return;
 
-        if (connection === 'open') {
-            isConnected = true;
-            console.log('\n==================================================');
-            console.log('🎉 BOT CONECTADO COM SUCESSO AO WHATSAPP!');
-            console.log(`📱 JID Conectado: ${sock.user?.id}`);
-            console.log('⏳ Gravando chaves de segurança no disco...');
-            console.log('==================================================\n');
-
-            setTimeout(() => {
-                console.log('✅ Sessão gravada com sucesso em ./session');
-                console.log('▶ Inicie o bot no PM2: pm2 start ecosystem.config.cjs');
-                process.exit(0);
-            }, 6000);
-        }
-    });
-
-    if (!sock.authState.creds.registered && !isPairingCompleted) {
-        setTimeout(async () => {
+            pairingRequested = true;
             try {
                 let code = await sock.requestPairingCode(targetNumber);
                 code = code?.match(/.{1,4}/g)?.join('-') || code;
@@ -117,10 +87,35 @@ async function startPairingLoop() {
                 console.log('   Aparelhos conectados > Conectar um aparelho > Conectar com número de telefone');
                 console.log('========================================\n');
             } catch (err) {
-                console.error('❌ Erro ao solicitar código de pareamento:', err.message);
+                console.error('❌ Erro ao solicitar código:', err.message);
             }
-        }, 3000);
-    }
+        }
+
+        if (connection === 'open') {
+            isConnected = true;
+            console.log('\n==================================================');
+            console.log('🎉 WHATSAPP CONECTADO COM SUCESSO!');
+            console.log(`📱 JID Conectado: ${sock.user?.id}`);
+            console.log('==================================================\n');
+
+            setTimeout(() => {
+                console.log('✅ Sessão salva em ./session com sucesso!');
+                process.exit(0);
+            }, 3000);
+        }
+
+        if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            if (statusCode === DisconnectReason.loggedOut) {
+                console.log('❌ Sessão desconectada. Limpando credenciais...');
+                fs.rmSync(SESSION_PATH, { recursive: true, force: true });
+                process.exit(1);
+            } else if (!isConnected) {
+                pairingRequested = false;
+                setTimeout(startPairing, 2000);
+            }
+        }
+    });
 }
 
-startPairingLoop();
+startPairing();

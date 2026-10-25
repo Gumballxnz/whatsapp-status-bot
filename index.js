@@ -1,11 +1,11 @@
+const baileys = require('baileys');
+const makeWASocket = baileys.default || baileys.makeWASocket || baileys;
 const {
-    makeWASocket,
-    useMultiFileAuthState,
-    makeCacheableSignalKeyStore,
     Browsers,
     DisconnectReason,
-    fetchLatestBaileysVersion
-} = require('@whiskeysockets/baileys');
+    fetchLatestBaileysVersion,
+    useMultiFileAuthState
+} = baileys;
 const pino = require('pino');
 const QRCode = require('qrcode');
 const fs = require('fs');
@@ -20,22 +20,42 @@ let activeSocket = null;
 let schedulerStarted = false;
 let pairingRequested = false;
 
-async function startWhatsAppBot() {
-    const { state, saveCreds } = await useMultiFileAuthState(env.SESSION_PATH);
-    const { version, isLatest } = await fetchLatestBaileysVersion();
+function hasValidSession() {
+    try {
+        const credsPath = path.join(env.SESSION_PATH, 'creds.json');
+        if (!fs.existsSync(credsPath)) return false;
+        const creds = JSON.parse(fs.readFileSync(credsPath, 'utf8'));
+        return !!(creds.me && creds.me.id);
+    } catch {
+        return false;
+    }
+}
 
-    console.log(`[Baileys] Versão: ${version.join('.')} (Mais recente: ${isLatest})`);
+async function startWhatsAppBot() {
+    if (!fs.existsSync(env.SESSION_PATH)) {
+        fs.mkdirSync(env.SESSION_PATH, { recursive: true });
+    }
+
+    const { state, saveCreds } = await useMultiFileAuthState(env.SESSION_PATH);
+
+    let version;
+    try {
+        const fetched = await fetchLatestBaileysVersion();
+        version = fetched.version;
+    } catch (e) {
+        version = [2, 3000, 1044006379];
+    }
+
+    console.log(`[Baileys] Versão: ${version.join('.')}`);
 
     const sock = makeWASocket({
         version,
         logger: pino({ level: 'silent' }),
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }))
-        },
+        auth: state,
         browser: Browsers.ubuntu('Chrome'),
         printQRInTerminal: !env.BOT_NUMBER,
-        syncFullHistory: false
+        syncFullHistory: false,
+        markOnlineOnConnect: true
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -43,16 +63,31 @@ async function startWhatsAppBot() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        if (qr && !env.BOT_NUMBER) {
-            console.log('[Auth] Novo QR Code gerado.');
-            try {
-                await QRCode.toFile(QR_FILE, qr, { width: 400 });
-                console.log(`[Auth] QR Code salvo em: ${QR_FILE}`);
-                if (process.platform === 'win32') {
-                    exec(`start "" "${QR_FILE}"`);
+        if (qr && !hasValidSession()) {
+            if (env.BOT_NUMBER) {
+                pairingRequested = true;
+                try {
+                    let code = await sock.requestPairingCode(env.BOT_NUMBER);
+                    code = code?.match(/.{1,4}/g)?.join('-') || code;
+                    console.log('\n========================================');
+                    console.log(`📱 NÚMERO DO BOT: +${env.BOT_NUMBER}`);
+                    console.log(`🔑 CÓDIGO DE PAREAMENTO: ${code}`);
+                    console.log('👉 No WhatsApp: Aparelhos conectados > Conectar um aparelho > Conectar com número de telefone');
+                    console.log('========================================\n');
+                } catch (err) {
+                    console.error('[Pairing] Erro ao gerar código:', err.message);
                 }
-            } catch (err) {
-                console.error('[Auth] Erro ao salvar imagem do QR Code:', err.message);
+            } else {
+                console.log('[Auth] Novo QR Code gerado.');
+                try {
+                    await QRCode.toFile(QR_FILE, qr, { width: 400 });
+                    console.log(`[Auth] QR Code salvo em: ${QR_FILE}`);
+                    if (process.platform === 'win32') {
+                        exec(`start "" "${QR_FILE}"`);
+                    }
+                } catch (err) {
+                    console.error('[Auth] Erro ao salvar imagem do QR Code:', err.message);
+                }
             }
         }
 
@@ -69,10 +104,8 @@ async function startWhatsAppBot() {
                 pairingRequested = false;
                 console.log('[Conexão] Reiniciando para nova autenticação...');
                 setTimeout(startWhatsAppBot, 2000);
-            } else if (statusCode === 515 || statusCode === DisconnectReason.restartRequired) {
-                console.log('🔄 WhatsApp confirmou o pareamento! Finalizando chaves...');
-                setTimeout(startWhatsAppBot, 1500);
             } else {
+                pairingRequested = false;
                 console.log('[Conexão] Reconectando em 3 segundos...');
                 setTimeout(startWhatsAppBot, 3000);
             }
@@ -100,23 +133,6 @@ async function startWhatsAppBot() {
             }, 5000);
         }
     });
-
-    if (!sock.authState.creds.registered && env.BOT_NUMBER && !pairingRequested) {
-        pairingRequested = true;
-        setTimeout(async () => {
-            try {
-                let code = await sock.requestPairingCode(env.BOT_NUMBER);
-                code = code?.match(/.{1,4}/g)?.join('-') || code;
-                console.log('\n========================================');
-                console.log(`📱 NÚMERO DO BOT: +${env.BOT_NUMBER}`);
-                console.log(`🔑 CÓDIGO DE PAREAMENTO: ${code}`);
-                console.log('👉 No WhatsApp: Aparelhos conectados > Conectar um aparelho > Conectar com número de telefone');
-                console.log('========================================\n');
-            } catch (err) {
-                console.error('[Pairing] Erro ao solicitar código de pareamento:', err.message);
-            }
-        }, 3000);
-    }
 }
 
 startWhatsAppBot();

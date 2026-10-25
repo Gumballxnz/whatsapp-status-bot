@@ -9,7 +9,7 @@
     "connect": "node qr_connect.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "6.7.16",
+    "baileys": "^7.0.0-rc14",
     "dotenv": "^18.0.9",
     "googleapis": "^188.0.0",
     "moment-timezone": "^0.5.46",
