@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "pair": "node pair.js",
     "connect": "node qr_connect.js"
   },
   "dependencies": {
