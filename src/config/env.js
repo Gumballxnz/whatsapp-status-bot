@@ -5,7 +5,7 @@ module.exports = {
     GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || '',
     GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET || '',
     GOOGLE_REFRESH_TOKEN: process.env.GOOGLE_REFRESH_TOKEN || '',
-    OWNER_NUMBER: (process.env.OWNER_NUMBER || '258XXXXXXXXX').replace(/\D/g, ''),
+    OWNER_NUMBER: (process.env.OWNER_NUMBER || '').replace(/\D/g, ''),
     BOT_NUMBER: (process.env.BOT_NUMBER || process.env.PAIRING_NUMBER || '').replace(/\D/g, ''),
     STATUS_CRON: process.env.STATUS_CRON || '0 9 * * *',
     TIMEZONE: process.env.TIMEZONE || 'Africa/Maputo',
