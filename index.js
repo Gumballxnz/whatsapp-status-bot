@@ -19,7 +19,6 @@ const QR_FILE = path.join(__dirname, 'qrcode.png');
 let activeSocket = null;
 let schedulerStarted = false;
 let pairingRequested = false;
-let presenceInterval = null;
 
 function hasValidSession() {
     try {
@@ -30,23 +29,6 @@ function hasValidSession() {
     } catch {
         return false;
     }
-}
-
-function startAlwaysOnlinePresence(sock) {
-    sock.sendPresenceUpdate('available').catch(() => {});
-
-    if (presenceInterval) {
-        clearInterval(presenceInterval);
-    }
-
-    // Mantém presença "Online" ativa a cada 20 segundos
-    presenceInterval = setInterval(() => {
-        if (activeSocket) {
-            activeSocket.sendPresenceUpdate('available').catch(() => {});
-        }
-    }, 20000);
-
-    presenceInterval.unref?.();
 }
 
 async function startWhatsAppBot() {
@@ -77,19 +59,6 @@ async function startWhatsAppBot() {
     });
 
     sock.ev.on('creds.update', saveCreds);
-
-    // Confirma entrega (2 tracinhos cinzas) automaticamente para todas as mensagens recebidas
-    sock.ev.on('messages.upsert', async ({ messages }) => {
-        for (const m of messages) {
-            if (!m.key?.fromMe && m.key?.remoteJid && m.key?.id) {
-                try {
-                    await sock.sendReceipt(m.key.remoteJid, m.key.participant, [m.key.id], 'delivery');
-                } catch (e) {
-                    // Silencia erros de recibo se houver
-                }
-            }
-        }
-    });
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -124,11 +93,6 @@ async function startWhatsAppBot() {
 
         if (connection === 'close') {
             activeSocket = null;
-            if (presenceInterval) {
-                clearInterval(presenceInterval);
-                presenceInterval = null;
-            }
-
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             console.warn(`[Conexão] Conexão encerrada. Código de status: ${statusCode}`);
 
@@ -149,8 +113,6 @@ async function startWhatsAppBot() {
             console.log('=============================================');
             console.log('✅ WHATSAPP CONECTADO COM SUCESSO!');
             console.log(`📱 JID Conectado: ${sock.user?.id}`);
-            console.log('🟢 MODO SEMPRE ONLINE ATIVO (Heartbeat 20s)');
-            console.log('✔️✔️ CONFIRMAÇÃO DE ENTREGA (2 CERTOS) ATIVA');
             console.log('=============================================');
 
             activeSocket = sock;
@@ -159,7 +121,9 @@ async function startWhatsAppBot() {
                 fs.unlinkSync(QR_FILE);
             }
 
-            startAlwaysOnlinePresence(sock);
+            try {
+                await sock.sendPresenceUpdate('available');
+            } catch (e) {}
 
             if (!schedulerStarted) {
                 startScheduler(() => activeSocket);
