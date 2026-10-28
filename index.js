@@ -4,7 +4,8 @@ const {
     Browsers,
     DisconnectReason,
     fetchLatestBaileysVersion,
-    useMultiFileAuthState
+    useMultiFileAuthState,
+    makeCacheableSignalKeyStore
 } = baileys;
 const pino = require('pino');
 const QRCode = require('qrcode');
@@ -13,12 +14,13 @@ const path = require('path');
 const { exec } = require('child_process');
 
 const env = require('./src/config/env');
-const { startScheduler } = require('./src/services/scheduler');
+const { startScheduler, triggerDailyStatus, hasPostedToday } = require('./src/services/scheduler');
 
 const QR_FILE = path.join(__dirname, 'qrcode.png');
 let activeSocket = null;
 let schedulerStarted = false;
 let pairingRequested = false;
+let presenceInterval = null;
 
 function hasValidSession() {
     try {
@@ -29,6 +31,24 @@ function hasValidSession() {
     } catch {
         return false;
     }
+}
+
+function startPresenceKeepAlive(sock) {
+    if (presenceInterval) {
+        clearInterval(presenceInterval);
+        presenceInterval = null;
+    }
+
+    sock.sendPresenceUpdate('available').catch(() => {});
+
+    // Envia sinal a cada 25 segundos para manter a conexão WebSocket viva com o WhatsApp
+    presenceInterval = setInterval(() => {
+        if (activeSocket?.user) {
+            activeSocket.sendPresenceUpdate('available').catch(() => {});
+        }
+    }, 25000);
+
+    presenceInterval.unref?.();
 }
 
 async function startWhatsAppBot() {
@@ -51,11 +71,17 @@ async function startWhatsAppBot() {
     const sock = makeWASocket({
         version,
         logger: pino({ level: 'silent' }),
-        auth: state,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }))
+        },
         browser: Browsers.ubuntu('Chrome'),
         printQRInTerminal: !env.BOT_NUMBER,
         syncFullHistory: false,
-        markOnlineOnConnect: true
+        markOnlineOnConnect: true,
+        keepAliveIntervalMs: 25000,
+        defaultQueryTimeoutMs: 180000,
+        connectTimeoutMs: 60000
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -92,7 +118,17 @@ async function startWhatsAppBot() {
         }
 
         if (connection === 'close') {
+            if (presenceInterval) {
+                clearInterval(presenceInterval);
+                presenceInterval = null;
+            }
+
+            try {
+                sock.end?.(undefined);
+            } catch (e) {}
+
             activeSocket = null;
+
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             console.warn(`[Conexão] Conexão encerrada. Código de status: ${statusCode}`);
 
@@ -121,14 +157,20 @@ async function startWhatsAppBot() {
                 fs.unlinkSync(QR_FILE);
             }
 
-            try {
-                await sock.sendPresenceUpdate('available');
-            } catch (e) {}
+            startPresenceKeepAlive(sock);
 
             if (!schedulerStarted) {
                 startScheduler(() => activeSocket);
                 schedulerStarted = true;
             }
+
+            // Verifica se o status de hoje ainda não foi postado (ex: horário passou enquanto offline)
+            setTimeout(async () => {
+                if (activeSocket?.user && !hasPostedToday()) {
+                    console.log('[Scheduler] Nenhuma postagem registrada para hoje. Disparando status pendente...');
+                    await triggerDailyStatus(() => activeSocket, false);
+                }
+            }, 5000);
         }
     });
 }

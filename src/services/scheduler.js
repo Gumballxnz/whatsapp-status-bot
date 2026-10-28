@@ -1,9 +1,12 @@
 const cron = require('node-cron');
 const moment = require('moment-timezone');
+const fs = require('fs');
+const path = require('path');
 const env = require('../config/env');
 const { fetchGoogleContacts } = require('./googleContacts');
 const { postMediaFileStatus } = require('./statusPoster');
 
+const LAST_POST_FILE = path.join(__dirname, '../../last_post.json');
 let activeCronJob = null;
 
 function calculateCurrentDay() {
@@ -12,31 +15,70 @@ function calculateCurrentDay() {
     return today.diff(start, 'days') + 1;
 }
 
-async function triggerDailyStatus(getSocket, isTest = false) {
-    const sock = typeof getSocket === 'function' ? getSocket() : getSocket;
-
-    if (!sock?.user) {
-        console.error('[Scheduler] Não foi possível postar: Socket do WhatsApp não está conectado.');
-        return;
-    }
-
+function hasPostedToday() {
     try {
-        const botJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
-        const recipients = await fetchGoogleContacts([botJid]);
+        if (!fs.existsSync(LAST_POST_FILE)) return false;
+        const data = JSON.parse(fs.readFileSync(LAST_POST_FILE, 'utf8'));
+        const todayStr = moment.tz(env.TIMEZONE).format('YYYY-MM-DD');
+        return data.lastPostedDate === todayStr;
+    } catch {
+        return false;
+    }
+}
 
-        if (recipients.length === 0) {
-            console.warn('[Scheduler] Nenhum destinatário válido disponível para envio.');
+function recordTodayPost(dayNumber) {
+    try {
+        const todayStr = moment.tz(env.TIMEZONE).format('YYYY-MM-DD');
+        fs.writeFileSync(
+            LAST_POST_FILE,
+            JSON.stringify({ lastPostedDate: todayStr, dayNumber, timestamp: new Date().toISOString() }, null, 2)
+        );
+    } catch (e) {
+        console.error('[Post Tracker] Erro ao gravar registro de postagem:', e.message);
+    }
+}
+
+async function triggerDailyStatus(getSocket, isTest = false, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        const sock = typeof getSocket === 'function' ? getSocket() : getSocket;
+
+        if (!sock?.user) {
+            console.error(`[Scheduler] [Tentativa ${attempt}/${maxRetries}] Socket do WhatsApp não está conectado.`);
+            if (attempt < maxRetries) {
+                console.log('[Scheduler] Aguardando 10 segundos para o socket reconectar...');
+                await new Promise((r) => setTimeout(r, 10000));
+                continue;
+            }
             return;
         }
 
-        const dayNumber = calculateCurrentDay();
-        const caption = isTest ? `DAY ${dayNumber} (TESTE)` : `DAY ${dayNumber}`;
+        try {
+            const botJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+            const recipients = await fetchGoogleContacts([botJid]);
 
-        console.log(`[Scheduler] Disparando status: "${caption}" para ${recipients.length} destinatário(s)...`);
-        await postMediaFileStatus(sock, env.MEDIA_PATH, caption, recipients);
-        console.log('[Scheduler] Status diário postado com sucesso no WhatsApp!');
-    } catch (error) {
-        console.error('[Scheduler] Falha na execução do envio de status:', error.message || error);
+            if (recipients.length === 0) {
+                console.warn('[Scheduler] Nenhum destinatário válido disponível para envio.');
+                return;
+            }
+
+            const dayNumber = calculateCurrentDay();
+            const caption = isTest ? `DAY ${dayNumber} (TESTE)` : `DAY ${dayNumber}`;
+
+            console.log(`[Scheduler] [Tentativa ${attempt}/${maxRetries}] Disparando status: "${caption}" para ${recipients.length} destinatário(s)...`);
+            await postMediaFileStatus(sock, env.MEDIA_PATH, caption, recipients);
+            console.log('[Scheduler] Status diário postado com sucesso no WhatsApp!');
+
+            if (!isTest) {
+                recordTodayPost(dayNumber);
+            }
+            return;
+        } catch (error) {
+            console.error(`[Scheduler] Falha na tentativa ${attempt}/${maxRetries}:`, error.message || error);
+            if (attempt < maxRetries) {
+                console.log('[Scheduler] Aguardando 10 segundos antes de tentar novamente...');
+                await new Promise((r) => setTimeout(r, 10000));
+            }
+        }
     }
 }
 
@@ -64,5 +106,6 @@ function startScheduler(getSocket) {
 module.exports = {
     startScheduler,
     triggerDailyStatus,
-    calculateCurrentDay
+    calculateCurrentDay,
+    hasPostedToday
 };
